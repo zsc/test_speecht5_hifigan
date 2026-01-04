@@ -1,0 +1,9 @@
+numpy
+scipy
+torch
+torchaudio
+transformers>=4.36.0
+librosa
+soundfile
+pillow
+pillow-avif-plugin

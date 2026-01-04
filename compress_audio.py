@@ -1,137 +1,9 @@
 import argparse
 import os
-import sys
-import numpy as np
 import soundfile as sf
 import librosa
-import torch
-import torchaudio
-from transformers import SpeechT5HifiGan
 from PIL import Image
-import pillow_avif  # Ensures plugin is registered
-
-# Constants from mel.md
-TARGET_SR = 16000
-N_FFT = 1024
-WIN_LENGTH = 1024
-HOP_LENGTH = 256
-N_MELS = 80
-FMIN = 80
-FMAX = 7600
-MIN_DB = -11.0  # Estimated min for log10(1e-10) is -10. We use -11 to be safe/consistent
-MAX_DB = 4.0    # Estimated max. log10(10000) is 4. usually signals are normalized so < 1. 
-                # Wait, if signal is [-1, 1], magnitude is <= 1?
-                # If power=1.0 (magnitude), max val is sum of window. 
-                # Hann window sum is N/2 approx. 1024/2 = 512.
-                # log10(512) approx 2.7. 
-                # So 4.0 is a safe upper bound.
-QUALITIES = [70, 80, 85, 90, 95]
-
-def get_device():
-    if torch.cuda.is_available():
-        return "cuda"
-    elif torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
-
-def wav_to_logmel(wav_path):
-    """
-    Reads wav, returns (T, 80) log10-mel spectrogram.
-    Strictly follows mel.md specs.
-    """
-    wav, sr = sf.read(wav_path)
-    if wav.ndim == 2:
-        wav = wav.mean(axis=1) # mono
-    wav = wav.astype(np.float32)
-
-    if sr != TARGET_SR:
-        wav = librosa.resample(wav, orig_sr=sr, target_sr=TARGET_SR)
-        sr = TARGET_SR
-
-    # Compute STFT
-    S = np.abs(
-        librosa.stft(
-            wav,
-            n_fft=N_FFT,
-            hop_length=HOP_LENGTH,
-            win_length=WIN_LENGTH,
-            window="hann",
-            center=True,
-            pad_mode="reflect",
-        )
-    )
-
-    # Mel basis
-    mel_basis = librosa.filters.mel(
-        sr=sr,
-        n_fft=N_FFT,
-        n_mels=N_MELS,
-        fmin=FMIN,
-        fmax=FMAX,
-        htk=False,         # Slaney
-        norm="slaney",     # Slaney
-    )
-
-    mel = mel_basis @ S
-    mel = np.maximum(mel, 1e-10)
-    logmel = np.log10(mel) # (80, T)
-
-    return logmel.T.astype(np.float32) # Return (T, 80)
-
-def logmel_to_image(logmel, min_val=MIN_DB, max_val=MAX_DB):
-    """
-    Converts (T, 80) float logmel to PIL Image (Grayscale).
-    Time axis maps to Width. Frequency axis maps to Height.
-    So Image size will be (T, 80).
-    Input shape: (T, 80)
-    """
-    # Normalize to 0-1
-    norm = (logmel - min_val) / (max_val - min_val)
-    norm = np.clip(norm, 0.0, 1.0)
-    
-    # Scale to 0-255
-    uint8_data = (norm * 255.0).astype(np.uint8)
-    
-    # Transpose to (80, T) for Image.fromarray which expects (H, W)
-    # But wait, usually we want low freq at bottom.
-    # index 0 is low freq in librosa.
-    # In image, (0,0) is top-left.
-    # So index 0 will be at top. 
-    # To have low freq at bottom, we should flipud the (80, T) array.
-    img_data = np.flipud(uint8_data.T) # (80, T) -> freq is height, time is width
-    
-    return Image.fromarray(img_data, mode='L')
-
-def image_to_logmel(image, min_val=MIN_DB, max_val=MAX_DB):
-    """
-    Converts PIL Image to (T, 80) logmel.
-    """
-    image = image.convert('L')
-    img_data = np.array(image).astype(np.float32)
-    
-    # Flip back (we flipped up-down to put low freq at bottom)
-    img_data = np.flipud(img_data)
-    
-    # Transpose back: (80, T) -> (T, 80)
-    logmel_norm = img_data.T / 255.0
-    
-    # De-normalize
-    logmel = logmel_norm * (max_val - min_val) + min_val
-    
-    return logmel
-
-def reconstruct_wav(logmel, vocoder, device):
-    """
-    logmel: (T, 80)
-    """
-    # Prepare input for vocoder
-    # Vocoder expects (batch, seq_len, dim)
-    spectrogram = torch.tensor(logmel).unsqueeze(0).to(device)
-    
-    with torch.no_grad():
-        waveform = vocoder(spectrogram)
-        
-    return waveform.squeeze().cpu().numpy()
+import audio_avif
 
 def generate_html(output_dir, results):
     """
@@ -283,10 +155,9 @@ def main():
     args = parser.parse_args()
 
     # Setup device and model
-    device = get_device()
+    device = audio_avif.get_device()
     print(f"Loading SpeechT5HifiGan on {device}...")
-    vocoder = SpeechT5HifiGan.from_pretrained("microsoft/speecht5_hifigan").to(device)
-    vocoder.eval()
+    vocoder = audio_avif.load_vocoder(device)
 
     # Collect files
     files = []
@@ -314,30 +185,27 @@ def main():
         
         # 1. Original -> Mel
         try:
-            logmel = wav_to_logmel(wav_file) # (T, 80)
+            logmel = audio_avif.wav_to_logmel(wav_file) # (T, 80)
         except Exception as e:
             print(f"Error reading {wav_file}: {e}")
             continue
 
         # Save resampled original for comparison
-        # We need the audio data that corresponds to the extracted mel.
-        # wav_to_logmel resamples internally but returns mel.
-        # Let's just save the resampled audio separately using soundfile/librosa
-        wav_orig, sr = librosa.load(wav_file, sr=TARGET_SR, mono=True)
+        wav_orig, sr = librosa.load(wav_file, sr=audio_avif.TARGET_SR, mono=True)
         orig_wav_path = os.path.join(file_output_dir, "original.wav")
-        sf.write(orig_wav_path, wav_orig, TARGET_SR)
+        sf.write(orig_wav_path, wav_orig, audio_avif.TARGET_SR)
         orig_wav_size = os.path.getsize(orig_wav_path)
         
         # Save Original Mel as PNG (Lossless)
-        img_orig = logmel_to_image(logmel)
+        img_orig = audio_avif.logmel_to_image(logmel)
         orig_mel_path = os.path.join(file_output_dir, "original_mel.png")
         img_orig.save(orig_mel_path, "PNG")
 
         variants = {}
 
-        for q in QUALITIES:
+        for q in audio_avif.QUALITIES:
             # Mel -> Image
-            img = logmel_to_image(logmel)
+            img = audio_avif.logmel_to_image(logmel)
             
             # Save AVIF
             avif_path = os.path.join(file_output_dir, f"q{q}.avif")
@@ -349,14 +217,14 @@ def main():
             img_loaded = Image.open(avif_path)
             
             # Image -> Mel
-            logmel_recon = image_to_logmel(img_loaded)
+            logmel_recon = audio_avif.image_to_logmel(img_loaded)
             
             # Mel -> Wav
-            wav_recon = reconstruct_wav(logmel_recon, vocoder, device)
+            wav_recon = audio_avif.reconstruct_wav(logmel_recon, vocoder, device)
             
             # Save Wav
             wav_recon_path = os.path.join(file_output_dir, f"q{q}_recon.wav")
-            sf.write(wav_recon_path, wav_recon, TARGET_SR)
+            sf.write(wav_recon_path, wav_recon, audio_avif.TARGET_SR)
             
             # Relative paths for HTML
             variants[str(q)] = {

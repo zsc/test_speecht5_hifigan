@@ -56,16 +56,82 @@
 *   **其他图像编码**: 对比 WebP, JPEG XL, HEIC 在频谱图压缩上的表现。
 *   **多通道支持**: 将立体声或多声道音频映射到图像的 RGB 通道进行压缩。
 
-## 5. 运行指南
+## 5. 安装
+
+本项目已支持通过 `pip` 安装：
 
 ```bash
-# 安装依赖
-pip install torch torchaudio transformers librosa soundfile pillow pillow-avif-plugin numpy scipy
+# 在项目根目录下执行
+pip install .
 
-# 运行压缩脚本
-python3 compress_audio.py input.wav --output results_dir
+# 或者以编辑模式安装
+pip install -e .
+```
+
+## 6. 使用指南
+
+### 6.1 命令行工具 (CLI)
+
+安装后，可以直接使用 `audio-avif` 命令处理音频文件或整个目录：
+
+```bash
+# 处理单个文件
+audio-avif input.wav --output results_dir
+
+# 处理整个目录下的所有 wav 文件
+audio-avif ./my_audios --output results_dir
 ```
 
 运行结束后，打开 `results_dir/index.html` 即可在浏览器中对比试听和查看压缩比数据。
 
+### 6.2 Python API (作为编解码库使用)
+
+你也可以在代码中直接调用 `audio_avif` 提供的核心功能：
+
+```python
+import audio_avif
+from PIL import Image
+import soundfile as sf
+
+# 1. 准备环境 (加载声码器)
+device = audio_avif.get_device()
+vocoder = audio_avif.load_vocoder(device)
+
+# 2. 编码: WAV -> AVIF
+# 提取 Log-Mel 谱
+logmel = audio_avif.wav_to_logmel("input.wav")
+# 转换为图像并保存为 AVIF
+img = audio_avif.logmel_to_image(logmel)
+img.save("compressed.avif", "AVIF", quality=85)
+
+# 3. 解码: AVIF -> WAV
+# 加载 AVIF 图像
+img_loaded = Image.open("compressed.avif")
+# 还原 Log-Mel 谱
+logmel_recon = audio_avif.image_to_logmel(img_loaded)
+# 使用声码器重建音频
+wav_recon = audio_avif.reconstruct_wav(logmel_recon, vocoder, device)
+
+# 4. 保存结果
+sf.write("reconstructed.wav", wav_recon, audio_avif.TARGET_SR)
 ```
+
+## 7. 测试
+
+
+
+本项目包含单元测试，用于验证编解码流程的连通性及基本信号质量（PSNR）。测试过程中会自动进行响度对齐，并将对齐参数保存到 JSON 文件中。
+
+
+
+运行测试：
+
+```bash
+
+python3 -m unittest discover tests
+
+```
+
+
+
+## 8. 注意事项
