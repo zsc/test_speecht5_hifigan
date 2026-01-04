@@ -148,16 +148,49 @@ def generate_html(output_dir, results):
     with open(os.path.join(output_dir, 'index.html'), 'w') as f:
         f.write(final_html)
 
+def decode_file(input_avif, output_wav, device, vocoder):
+    print(f"Decoding {input_avif} -> {output_wav}...")
+    try:
+        img = Image.open(input_avif)
+        logmel = audio_avif.image_to_logmel(img)
+        wav = audio_avif.reconstruct_wav(logmel, vocoder, device)
+        sf.write(output_wav, wav, audio_avif.TARGET_SR)
+        print(f"Success. Saved to {output_wav}")
+    except Exception as e:
+        print(f"Error decoding {input_avif}: {e}")
+
 def main():
-    parser = argparse.ArgumentParser(description="Compress wav via Mel-Spectrogram AVIF image.")
-    parser.add_argument("input", help="Path to wav file or directory containing wav files.")
-    parser.add_argument("--output", default="output", help="Output directory.")
+    parser = argparse.ArgumentParser(description="Compress/Decompress audio via Mel-Spectrogram AVIF image.")
+    parser.add_argument("input", help="Input file (WAV or AVIF) or directory (WAVs).")
+    parser.add_argument("--output", default=None, help="Output directory (for batch/demo) or filename (for single file). Defaults to 'output' for batch.")
     args = parser.parse_args()
 
+    # Determine mode based on input extension
+    is_decoding = os.path.isfile(args.input) and args.input.lower().endswith('.avif')
+    
     # Setup device and model
     device = audio_avif.get_device()
     print(f"Loading SpeechT5HifiGan on {device}...")
     vocoder = audio_avif.load_vocoder(device)
+
+    # --- DECODE MODE ---
+    if is_decoding:
+        output_path = args.output
+        if output_path is None:
+            # Default to input filename with .wav extension
+            output_path = os.path.splitext(args.input)[0] + ".wav"
+        
+        # If user provided a directory as output, place file inside
+        if os.path.isdir(output_path) or (args.output and not os.path.splitext(args.output)[1]):
+             os.makedirs(output_path, exist_ok=True)
+             output_path = os.path.join(output_path, os.path.splitext(os.path.basename(args.input))[0] + ".wav")
+             
+        decode_file(args.input, output_path, device, vocoder)
+        return
+
+    # --- ENCODE/DEMO MODE (Existing Logic) ---
+    # Handle default output dir if not specified
+    output_dir = args.output if args.output else "output"
 
     # Collect files
     files = []
@@ -173,14 +206,14 @@ def main():
         print("No wav files found.")
         return
 
-    os.makedirs(args.output, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
     
     results = []
 
     for wav_file in files:
         print(f"Processing {wav_file}...")
         base_name = os.path.splitext(os.path.basename(wav_file))[0]
-        file_output_dir = os.path.join(args.output, base_name)
+        file_output_dir = os.path.join(output_dir, base_name)
         os.makedirs(file_output_dir, exist_ok=True)
         
         # 1. Original -> Mel
@@ -228,8 +261,8 @@ def main():
             
             # Relative paths for HTML
             variants[str(q)] = {
-                'avif': os.path.relpath(avif_path, args.output),
-                'wav': os.path.relpath(wav_recon_path, args.output),
+                'avif': os.path.relpath(avif_path, output_dir),
+                'wav': os.path.relpath(wav_recon_path, output_dir),
                 'wav_size': orig_wav_size,
                 'avif_size': avif_size
             }
@@ -237,13 +270,13 @@ def main():
 
         results.append({
             'name': base_name,
-            'original': os.path.relpath(orig_wav_path, args.output),
-            'original_mel': os.path.relpath(orig_mel_path, args.output),
+            'original': os.path.relpath(orig_wav_path, output_dir),
+            'original_mel': os.path.relpath(orig_mel_path, output_dir),
             'variants': variants
         })
 
-    generate_html(args.output, results)
-    print(f"Done. Open {os.path.join(args.output, 'index.html')} to view results.")
+    generate_html(output_dir, results)
+    print(f"Done. Open {os.path.join(output_dir, 'index.html')} to view results.")
 
 if __name__ == "__main__":
     main()

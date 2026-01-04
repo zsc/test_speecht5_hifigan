@@ -72,17 +72,23 @@ pip install -e .
 
 ### 6.1 命令行工具 (CLI)
 
-安装后，可以直接使用 `audio-avif` 命令处理音频文件或整个目录：
+安装后，可以直接使用 `audio-avif` 命令处理音频文件：
 
-```bash
-# 处理单个文件
-audio-avif input.wav --output results_dir
+1.  **压缩/演示模式**:
+    处理单个 WAV 文件或整个目录，生成多种质量的 AVIF 和 HTML 对比报告。
+    ```bash
+    audio-avif input.wav --output results_dir
+    ```
 
-# 处理整个目录下的所有 wav 文件
-audio-avif ./my_audios --output results_dir
-```
-
-运行结束后，打开 `results_dir/index.html` 即可在浏览器中对比试听和查看压缩比数据。
+2.  **解码模式**:
+    直接将 `.avif` 文件解码为 `.wav`。
+    ```bash
+    # 将 input.avif 解码为 input.wav
+    audio-avif input.avif
+    
+    # 指定输出文件名
+    audio-avif input.avif --output output.wav
+    ```
 
 ### 6.2 Python API (作为编解码库使用)
 
