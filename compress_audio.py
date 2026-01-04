@@ -152,8 +152,13 @@ def decode_file(input_avif, output_wav, device, vocoder):
     print(f"Decoding {input_avif} -> {output_wav}...")
     try:
         img = Image.open(input_avif)
-        logmel = audio_avif.image_to_logmel(img)
+        logmel, rms = audio_avif.image_to_logmel(img)
         wav = audio_avif.reconstruct_wav(logmel, vocoder, device)
+        
+        if rms is not None:
+            print(f"  Restoring loudness (RMS: {rms:.4f})...")
+            wav = audio_avif.apply_loudness(wav, rms)
+            
         sf.write(output_wav, wav, audio_avif.TARGET_SR)
         print(f"Success. Saved to {output_wav}")
     except Exception as e:
@@ -218,7 +223,7 @@ def main():
         
         # 1. Original -> Mel
         try:
-            logmel = audio_avif.wav_to_logmel(wav_file) # (T, 80)
+            logmel, rms = audio_avif.wav_to_logmel(wav_file) # (T, 80)
         except Exception as e:
             print(f"Error reading {wav_file}: {e}")
             continue
@@ -230,19 +235,19 @@ def main():
         orig_wav_size = os.path.getsize(orig_wav_path)
         
         # Save Original Mel as PNG (Lossless)
-        img_orig = audio_avif.logmel_to_image(logmel)
+        img_orig = audio_avif.logmel_to_image(logmel, rms=rms) # Embed RMS
         orig_mel_path = os.path.join(file_output_dir, "original_mel.png")
-        img_orig.save(orig_mel_path, "PNG")
+        img_orig.save(orig_mel_path, "PNG", exif=img_orig.getexif()) # Explicitly save Exif
 
         variants = {}
 
         for q in audio_avif.QUALITIES:
             # Mel -> Image
-            img = audio_avif.logmel_to_image(logmel)
+            img = audio_avif.logmel_to_image(logmel, rms=rms)
             
             # Save AVIF
             avif_path = os.path.join(file_output_dir, f"q{q}.avif")
-            img.save(avif_path, "AVIF", quality=q)
+            img.save(avif_path, "AVIF", quality=q, exif=img.getexif())
             avif_size = os.path.getsize(avif_path)
             
             # Load AVIF
@@ -250,10 +255,14 @@ def main():
             img_loaded = Image.open(avif_path)
             
             # Image -> Mel
-            logmel_recon = audio_avif.image_to_logmel(img_loaded)
+            logmel_recon, rms_recon = audio_avif.image_to_logmel(img_loaded)
             
             # Mel -> Wav
             wav_recon = audio_avif.reconstruct_wav(logmel_recon, vocoder, device)
+            
+            # Restore Loudness
+            if rms_recon:
+                wav_recon = audio_avif.apply_loudness(wav_recon, rms_recon)
             
             # Save Wav
             wav_recon_path = os.path.join(file_output_dir, f"q{q}_recon.wav")

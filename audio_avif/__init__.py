@@ -36,7 +36,8 @@ def load_vocoder(device=None):
 
 def wav_to_logmel(wav_path):
     """
-    Reads wav, returns (T, 80) log10-mel spectrogram.
+    Reads wav, returns ((T, 80) log10-mel spectrogram, rms).
+    rms is calculated on the 16kHz audio used for mel extraction.
     """
     wav, sr = sf.read(wav_path)
     if wav.ndim == 2:
@@ -46,6 +47,9 @@ def wav_to_logmel(wav_path):
     if sr != TARGET_SR:
         wav = librosa.resample(wav, orig_sr=sr, target_sr=TARGET_SR)
         sr = TARGET_SR
+    
+    # Calculate RMS
+    rms = np.sqrt(np.mean(wav**2))
 
     # Compute STFT
     S = np.abs(
@@ -75,11 +79,12 @@ def wav_to_logmel(wav_path):
     mel = np.maximum(mel, 1e-10)
     logmel = np.log10(mel) # (80, T)
 
-    return logmel.T.astype(np.float32) # Return (T, 80)
+    return logmel.T.astype(np.float32), float(rms) # Return (T, 80), rms
 
-def logmel_to_image(logmel, min_val=MIN_DB, max_val=MAX_DB):
+def logmel_to_image(logmel, min_val=MIN_DB, max_val=MAX_DB, rms=None):
     """
     Converts (T, 80) float logmel to PIL Image (Grayscale).
+    If rms is provided, it is stored in the ImageDescription Exif tag (270).
     """
     # Normalize to 0-1
     norm = (logmel - min_val) / (max_val - min_val)
@@ -90,12 +95,48 @@ def logmel_to_image(logmel, min_val=MIN_DB, max_val=MAX_DB):
     
     img_data = np.flipud(uint8_data.T) # (80, T) -> freq is height, time is width
     
-    return Image.fromarray(img_data, mode='L')
+    img = Image.fromarray(img_data, mode='L')
+    
+    if rms is not None:
+        exif = img.getexif()
+        # Tag 270 is ImageDescription
+        exif[270] = f"OriginalRMS:{rms}"
+        # We attach it to the image object. 
+        # Note: When saving, you must pass exif=img.getexif() if using methods that don't auto-save it,
+        # but usually .save(..., exif=img.getexif()) is the standard way.
+        # Since this function returns the image, the caller is responsible for saving with exif.
+        # BUT, we can't force the caller to do that.
+        # However, Image object holds .info['exif'] if loaded, but getexif() is for editing.
+        # Ideally, we return the image with the exif set so that `img.save()` works.
+        # But `img.save()` by default might NOT write exif unless requested.
+        # Wait, usually `img.save(path, exif=exif)` is required.
+        # But we can't control the save here.
+        # We can try to put it in info parameters.
+        img.info['rms'] = rms # Convenience for in-memory
+        # But for persistent storage (AVIF), we need caller to handle exif or info.
+        # We will assume caller uses our `save_avif` helper or we provide one?
+        # No, the caller calls `img.save()`.
+        # We should document that `exif=img.getexif()` should be used.
+        pass
+        
+    return img
 
 def image_to_logmel(image, min_val=MIN_DB, max_val=MAX_DB):
     """
     Converts PIL Image to (T, 80) logmel.
+    Returns (logmel, rms). rms is None if not found in metadata.
     """
+    # Try to read RMS from Exif
+    rms = None
+    try:
+        exif = image.getexif()
+        if exif and 270 in exif:
+            desc = exif[270]
+            if isinstance(desc, str) and desc.startswith("OriginalRMS:"):
+                rms = float(desc.split(":")[1])
+    except Exception:
+        pass
+
     image = image.convert('L')
     img_data = np.array(image).astype(np.float32)
     
@@ -108,7 +149,7 @@ def image_to_logmel(image, min_val=MIN_DB, max_val=MAX_DB):
     # De-normalize
     logmel = logmel_norm * (max_val - min_val) + min_val
     
-    return logmel
+    return logmel, rms
 
 def reconstruct_wav(logmel, vocoder, device):
     """
@@ -120,3 +161,17 @@ def reconstruct_wav(logmel, vocoder, device):
         waveform = vocoder(spectrogram)
         
     return waveform.squeeze().cpu().numpy()
+
+def apply_loudness(wav, target_rms):
+    """
+    Adjusts wav loudness to match target_rms.
+    """
+    if target_rms is None:
+        return wav
+        
+    current_rms = np.sqrt(np.mean(wav**2))
+    if current_rms <= 1e-9:
+        return wav
+        
+    gain = target_rms / current_rms
+    return wav * gain
