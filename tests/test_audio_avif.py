@@ -31,7 +31,11 @@ class TestAudioAvif(unittest.TestCase):
         if os.path.exists(self.alignment_json_path):
             os.remove(self.alignment_json_path)
         if os.path.exists(self.test_dir):
-            os.rmdir(self.test_dir)
+            try:
+                import shutil
+                shutil.rmtree(self.test_dir)
+            except:
+                pass
 
     def calculate_psnr(self, original, reconstructed):
         min_len = min(len(original), len(reconstructed))
@@ -92,6 +96,51 @@ class TestAudioAvif(unittest.TestCase):
         os.remove(temp_avif)
 
         self.assertTrue(psnr > 0, "PSNR should be positive")
+
+    def test_reshape_logic(self):
+        # Generate longer audio (5s) to trigger reshaping
+        sr = 16000
+        duration = 5.0
+        t = np.linspace(0, duration, int(sr * duration), endpoint=False)
+        audio = 0.5 * np.sin(2 * np.pi * 440 * t)
+        
+        long_wav_path = os.path.join(self.test_dir, "long_tone.wav")
+        sf.write(long_wav_path, audio, sr)
+        
+        logmel, rms_orig = audio_avif.wav_to_logmel(long_wav_path)
+        T_orig = logmel.shape[0] # (T, 80)
+        
+        # 1. Test WITH Reshaping (Explicit)
+        img_reshaped = audio_avif.logmel_to_image(logmel, rms=rms_orig, reshape=True)
+        w, h = img_reshaped.size
+        
+        # Expect roughly square
+        # T ~ 313 frames. 80*313 = 25040 pixels. sqrt ~ 158.
+        # k = round(sqrt(313/80)) = round(1.97) = 2.
+        # Height should be 80 * 2 = 160.
+        self.assertEqual(h % 80, 0, "Height should be multiple of 80")
+        self.assertTrue(h > 80, "Should have stacked at least 2 strips for 5s audio")
+        
+        # Check metadata
+        exif = img_reshaped.getexif()
+        desc = exif.get(270)
+        self.assertIn("orig_w", desc, "Metadata should contain original width")
+        
+        # Reconstruction
+        logmel_recon, rms_recon = audio_avif.image_to_logmel(img_reshaped)
+        self.assertEqual(logmel_recon.shape, logmel.shape, "Reconstructed shape must match original")
+        
+        # 2. Test WITHOUT Reshaping
+        img_linear = audio_avif.logmel_to_image(logmel, rms=rms_orig, reshape=False)
+        w_lin, h_lin = img_linear.size
+        self.assertEqual(h_lin, 80, "Linear height must be 80")
+        self.assertEqual(w_lin, T_orig, "Linear width must match time frames")
+        
+        # Reconstruction
+        logmel_recon_lin, _ = audio_avif.image_to_logmel(img_linear)
+        self.assertEqual(logmel_recon_lin.shape, logmel.shape)
+        
+        os.remove(long_wav_path)
 
 if __name__ == '__main__':
     unittest.main()

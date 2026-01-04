@@ -169,6 +169,7 @@ def main():
     parser.add_argument("input", help="Input file (WAV, AVIF, or JPEG) or directory (WAVs).")
     parser.add_argument("--output", default=None, help="Output directory (for batch/demo) or filename (for single file). Defaults to 'output' for batch.")
     parser.add_argument("--jpg", action="store_true", help="Use JPEG instead of AVIF for compression.")
+    parser.add_argument("--sq", action="store_true", help="Enable square-reshaping heuristic. Default is linear (long strip).")
     args = parser.parse_args()
 
     # Determine mode based on input extension
@@ -220,6 +221,7 @@ def main():
     # Format settings
     img_ext = "jpg" if args.jpg else "avif"
     img_format = "JPEG" if args.jpg else "AVIF"
+    use_square = args.sq
 
     for wav_file in files:
         print(f"Processing {wav_file}...")
@@ -240,8 +242,8 @@ def main():
         sf.write(orig_wav_path, wav_orig, audio_avif.TARGET_SR)
         orig_wav_size = os.path.getsize(orig_wav_path)
         
-        # Save Original Mel as PNG (Lossless)
-        img_orig = audio_avif.logmel_to_image(logmel, rms=rms) # Embed RMS
+        # Save Original Mel as PNG (Lossless) - ALWAYS Linear (reshape=False) for visualization
+        img_orig = audio_avif.logmel_to_image(logmel, rms=rms, reshape=False) # Embed RMS
         orig_mel_path = os.path.join(file_output_dir, "original_mel.png")
         img_orig.save(orig_mel_path, "PNG", exif=img_orig.getexif()) # Explicitly save Exif
 
@@ -249,7 +251,7 @@ def main():
 
         for q in audio_avif.QUALITIES:
             # Mel -> Image
-            img = audio_avif.logmel_to_image(logmel, rms=rms)
+            img = audio_avif.logmel_to_image(logmel, rms=rms, reshape=use_square)
             
             # Save Compressed Image
             img_path = os.path.join(file_output_dir, f"q{q}.{img_ext}")
@@ -260,7 +262,7 @@ def main():
             # Note: opening and converting back ensures we see compression artifacts
             img_loaded = Image.open(img_path)
             
-            # Image -> Mel
+            # Image -> Mel (Automatic un-reshape via metadata)
             logmel_recon, rms_recon = audio_avif.image_to_logmel(img_loaded)
             
             # Mel -> Wav

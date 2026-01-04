@@ -1,4 +1,6 @@
 import os
+import math
+import json
 import numpy as np
 import soundfile as sf
 import librosa
@@ -81,10 +83,13 @@ def wav_to_logmel(wav_path):
 
     return logmel.T.astype(np.float32), float(rms) # Return (T, 80), rms
 
-def logmel_to_image(logmel, min_val=MIN_DB, max_val=MAX_DB, rms=None):
+def logmel_to_image(logmel, min_val=MIN_DB, max_val=MAX_DB, rms=None, reshape=False):
     """
     Converts (T, 80) float logmel to PIL Image (Grayscale).
-    If rms is provided, it is stored in the ImageDescription Exif tag (270).
+    
+    Args:
+        reshape (bool): If True, reshapes long spectrograms into a roughly square image
+                        by stacking time slices vertically. This often improves compression.
     """
     # Normalize to 0-1
     norm = (logmel - min_val) / (max_val - min_val)
@@ -93,30 +98,55 @@ def logmel_to_image(logmel, min_val=MIN_DB, max_val=MAX_DB, rms=None):
     # Scale to 0-255
     uint8_data = (norm * 255.0).astype(np.uint8)
     
-    img_data = np.flipud(uint8_data.T) # (80, T) -> freq is height, time is width
+    # Standard spectrogram orientation: Frequency is Y-axis (height), Time is X-axis (width)
+    # logmel is (Time, Freq) -> (T, 80)
+    # We transpose to (Freq, Time) -> (80, T)
+    # And flipud so low freq is at bottom
+    img_data = np.flipud(uint8_data.T) # (80, T)
     
-    img = Image.fromarray(img_data, mode='L')
+    original_width = img_data.shape[1]
+    metadata = {}
     
     if rms is not None:
+        metadata['rms'] = rms
+
+    if reshape:
+        # Square heuristic
+        T = original_width
+        # Target roughly square: Side ~ sqrt(80 * T)
+        # Number of strips k = Side / 80 = sqrt(T/80)
+        k = max(1, int(round(math.sqrt(T / 80.0))))
+        
+        # Calculate width per strip
+        width_per_strip = math.ceil(T / k)
+        
+        # Align to 16 for compression block efficiency
+        if width_per_strip % 16 != 0:
+            width_per_strip = ((width_per_strip // 16) + 1) * 16
+            
+        total_width_needed = width_per_strip * k
+        pad_amount = total_width_needed - T
+        
+        if pad_amount > 0:
+            # Pad with 0 (silence equivalent in normalized space)
+            padding = np.zeros((80, pad_amount), dtype=np.uint8)
+            img_data = np.hstack([img_data, padding])
+            
+        # Split and Stack Vertically
+        # Each chunk is (80, width_per_strip)
+        chunks = [img_data[:, i*width_per_strip : (i+1)*width_per_strip] for i in range(k)]
+        img_data = np.vstack(chunks) # (80*k, width_per_strip)
+        
+        metadata['orig_w'] = original_width
+
+    img = Image.fromarray(img_data, mode='L')
+    
+    if metadata:
         exif = img.getexif()
         # Tag 270 is ImageDescription
-        exif[270] = f"OriginalRMS:{rms}"
-        # We attach it to the image object. 
-        # Note: When saving, you must pass exif=img.getexif() if using methods that don't auto-save it,
-        # but usually .save(..., exif=img.getexif()) is the standard way.
-        # Since this function returns the image, the caller is responsible for saving with exif.
-        # BUT, we can't force the caller to do that.
-        # However, Image object holds .info['exif'] if loaded, but getexif() is for editing.
-        # Ideally, we return the image with the exif set so that `img.save()` works.
-        # But `img.save()` by default might NOT write exif unless requested.
-        # Wait, usually `img.save(path, exif=exif)` is required.
-        # But we can't control the save here.
-        # We can try to put it in info parameters.
-        img.info['rms'] = rms # Convenience for in-memory
-        # But for persistent storage (AVIF), we need caller to handle exif or info.
-        # We will assume caller uses our `save_avif` helper or we provide one?
-        # No, the caller calls `img.save()`.
-        # We should document that `exif=img.getexif()` should be used.
+        exif[270] = json.dumps(metadata)
+        # Note: The caller must use img.save(..., exif=img.getexif())
+        # We attach it to the image instance for convenience if supported
         pass
         
     return img
@@ -124,23 +154,51 @@ def logmel_to_image(logmel, min_val=MIN_DB, max_val=MAX_DB, rms=None):
 def image_to_logmel(image, min_val=MIN_DB, max_val=MAX_DB):
     """
     Converts PIL Image to (T, 80) logmel.
+    Handles un-reshaping if metadata indicates the image was squared.
     Returns (logmel, rms). rms is None if not found in metadata.
     """
-    # Try to read RMS from Exif
+    # Parse Metadata
     rms = None
-    try:
-        exif = image.getexif()
-        if exif and 270 in exif:
-            desc = exif[270]
+    orig_w = None
+    
+    exif = image.getexif()
+    if exif and 270 in exif:
+        desc = exif[270]
+        # Try Parsing JSON
+        try:
+            meta = json.loads(desc)
+            if isinstance(meta, dict):
+                rms = meta.get('rms')
+                orig_w = meta.get('orig_w')
+        except json.JSONDecodeError:
+            # Fallback to legacy format "OriginalRMS:0.123"
             if isinstance(desc, str) and desc.startswith("OriginalRMS:"):
-                rms = float(desc.split(":")[1])
-    except Exception:
-        pass
+                try:
+                    rms = float(desc.split(":")[1])
+                except:
+                    pass
 
     image = image.convert('L')
-    img_data = np.array(image).astype(np.float32)
+    img_data = np.array(image) # (H, W)
     
-    # Flip back
+    # Un-reshape if needed
+    if orig_w is not None:
+        H, W = img_data.shape
+        # We know each strip is 80 pixels high
+        if H % 80 == 0:
+            k = H // 80
+            # Split vertically
+            chunks = np.vsplit(img_data, k)
+            # Stack horizontally
+            img_data = np.hstack(chunks) # (80, k*W)
+            # Crop padding
+            img_data = img_data[:, :orig_w]
+        else:
+            print(f"Warning: Image height {H} is not a multiple of 80, cannot un-reshape correctly. Treating as standard.")
+
+    img_data = img_data.astype(np.float32)
+    
+    # Flip back (Spectrogram was flipud)
     img_data = np.flipud(img_data)
     
     # Transpose back: (80, T) -> (T, 80)

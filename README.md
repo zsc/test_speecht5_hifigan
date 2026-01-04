@@ -27,6 +27,7 @@
 - **数值映射**: 将 Log-Mel 谱的浮点数值（范围约为 -11.0 到 4.0）线性映射到 0-255 的 8-bit 灰度空间。
     - 时间轴映射为图像的**宽度**。
     - 频率轴映射为图像的**高度**（低频在下，高频在上）。
+- **重排 (Reshaping)**: 可选功能。为了提高图像编码效率，可通过 `--sq` 参数将细长的频谱图切片并堆叠成接近方形的图像（宽度按 16 对齐）。解码时根据元数据自动还原。
 - **元数据嵌入**: 计算原始音频的 RMS (Root Mean Square) 振幅，并作为元数据（Exif Tag 270 ImageDescription）嵌入到图像中。这确保了解码后的音频能还原到原始响度。
 - **编码**: 默认使用 `pillow-avif-plugin` 将灰度图编码为 AVIF 格式，也支持使用 JPEG 格式。
     - **Quality**: 支持 70, 80, 85, 90, 95 等不同质量因子，以此控制比特率。
@@ -84,6 +85,9 @@ pip install -e .
     
     # 使用 JPEG
     python3 compress_audio.py input.wav --output results_dir --jpg
+
+    # 启用方形重排 (Square Reshaping)
+    python3 compress_audio.py input.wav --output results_dir --sq
     ```
 
 2.  **解码模式**:
