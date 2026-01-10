@@ -84,7 +84,7 @@ def wav_to_logmel(wav_path):
 
     return logmel.T.astype(np.float32), float(rms) # Return (T, 80), rms
 
-def logmel_to_image(logmel, min_val=MIN_DB, max_val=MAX_DB, rms=None, reshape=False, stretch=1.0, gaussian_blur=None, horizontal_usm=None):
+def logmel_to_image(logmel, min_val=MIN_DB, max_val=MAX_DB, rms=None, reshape=False, stretch=1.0, gaussian_blur=None, horizontal_usm=None, shift_key=0):
     """
     Converts (T, 80) float logmel to PIL Image (Grayscale).
     
@@ -94,6 +94,7 @@ def logmel_to_image(logmel, min_val=MIN_DB, max_val=MAX_DB, rms=None, reshape=Fa
         stretch (float): Horizontal stretch factor. 2.0 means 2x width, 0.5 means 0.5x width.
         gaussian_blur (tuple): (kernel_size, sigma) for 1D horizontal Gaussian blur.
         horizontal_usm (tuple): (kernel_size, sigma, strength) for 1D horizontal unsharp mask.
+        shift_key (int): Vertical shift in pixels. Positive = Up (Higher Pitch), Negative = Down.
     """
     # Normalize to 0-1
     norm = (logmel - min_val) / (max_val - min_val)
@@ -107,6 +108,26 @@ def logmel_to_image(logmel, min_val=MIN_DB, max_val=MAX_DB, rms=None, reshape=Fa
     # We transpose to (Freq, Time) -> (80, T)
     # And flipud so low freq is at bottom
     img_data = np.flipud(uint8_data.T) # (80, T)
+
+    # Apply shifts sequentially
+    s_keys = [shift_key] if isinstance(shift_key, int) else shift_key
+    for sk in s_keys:
+        if sk == 0:
+            continue
+        # Estimate noise floor (5th percentile)
+        noise_floor = np.percentile(img_data, 5)
+        shifted = np.full_like(img_data, int(noise_floor))
+        
+        if sk > 0:
+            # Shift Up: Content moves up. Bottom filled with noise.
+            if sk < 80:
+                shifted[:-sk, :] = img_data[sk:, :]
+        else:
+            # Shift Down: Content moves down. Top filled with noise.
+            neg_sk = -sk
+            if neg_sk < 80:
+                shifted[neg_sk:, :] = img_data[:-neg_sk, :]
+        img_data = shifted
     
     if gaussian_blur is not None:
         kernel_size, sigma = gaussian_blur
@@ -184,7 +205,7 @@ def logmel_to_image(logmel, min_val=MIN_DB, max_val=MAX_DB, rms=None, reshape=Fa
         
     return img
 
-def logmel_to_webp_anim(logmel, rms, output_path, quality=80, chunk_width=64, gaussian_blur=None, horizontal_usm=None):
+def logmel_to_webp_anim(logmel, rms, output_path, quality=80, chunk_width=64, gaussian_blur=None, horizontal_usm=None, shift_key=0):
     """
     Saves logmel as an animated WebP (pseudo-video).
     logmel: (T, 80) float
@@ -197,6 +218,21 @@ def logmel_to_webp_anim(logmel, rms, output_path, quality=80, chunk_width=64, ga
     
     # Orientation: (80, T)
     img_data = np.flipud(uint8_data.T) # (80, T)
+
+    s_keys = [shift_key] if isinstance(shift_key, int) else shift_key
+    for sk in s_keys:
+        if sk == 0:
+            continue
+        noise_floor = np.percentile(img_data, 5)
+        shifted = np.full_like(img_data, int(noise_floor))
+        if sk > 0:
+            if sk < 80:
+                shifted[:-sk, :] = img_data[sk:, :]
+        else:
+            neg_sk = -sk
+            if neg_sk < 80:
+                shifted[neg_sk:, :] = img_data[:-neg_sk, :]
+        img_data = shifted
 
     if gaussian_blur is not None:
         kernel_size, sigma = gaussian_blur

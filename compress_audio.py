@@ -181,7 +181,15 @@ def main():
     parser.add_argument("--webp-video", action="store_true", help="Enable WebP animation (pseudo-video) compression experiment.")
     parser.add_argument("--horizontal-gaussian", type=str, default=None, help="Add 1D horizontal Gaussian blur, e.g. '10,3' for kernel-size=10, sigma=3.")
     parser.add_argument("--horizontal-usm", type=str, default=None, help="Add 1D horizontal unsharp mask, e.g. '10,3,0.1' for kernel-size=10, sigma=3, strength=0.1.")
+    parser.add_argument("--shift-key", type=str, default="0", help="Shift key (pitch) in pixels, comma-separated. E.g. '0' or '5,-5'.")
     args = parser.parse_args()
+
+    # Parse Shift Keys
+    try:
+        shift_keys = [int(x.strip()) for x in args.shift_key.split(',')]
+    except ValueError:
+        print("Invalid --shift-key format. Use comma-separated integers like '5,-5,0'.")
+        return
 
     # Parse Gaussian Blur
     gaussian_blur = None
@@ -294,18 +302,24 @@ def main():
 
         # Standard AVIF/JPEG/PNG Loop
         for q in qualities:
-            # Mel -> Image
-            img = audio_avif.logmel_to_image(logmel, rms=rms, reshape=use_square, stretch=args.stretch, gaussian_blur=gaussian_blur, horizontal_usm=horizontal_usm)
+            # Mel -> Image (Sequential Shifts)
+            img = audio_avif.logmel_to_image(logmel, rms=rms, reshape=use_square, stretch=args.stretch, gaussian_blur=gaussian_blur, horizontal_usm=horizontal_usm, shift_key=shift_keys)
             
             # Save Compressed Image
-            img_path = os.path.join(file_output_dir, f"q{q}.{img_ext}")
+            # Suffix shows all shifts if any
+            if all(s == 0 for s in shift_keys):
+                shift_suffix = ""
+            else:
+                shift_suffix = "_s" + "_".join(map(str, shift_keys))
+
+            img_path = os.path.join(file_output_dir, f"q{q}{shift_suffix}.{img_ext}")
             
             if img_format == "PNG":
                 img.save(img_path, img_format, exif=img.getexif())
-                key = "PNG Lossless"
+                base_key = "PNG Lossless"
             else:
                 img.save(img_path, img_format, quality=q, exif=img.getexif())
-                key = f"{img_format} Q{q}"
+                base_key = f"{img_format} Q{q}"
 
             compressed_img_size = os.path.getsize(img_path)
             
@@ -323,11 +337,15 @@ def main():
                 wav_recon = audio_avif.apply_loudness(wav_recon, rms_recon)
             
             # Save Wav
-            wav_recon_path = os.path.join(file_output_dir, f"q{q}_recon.wav")
+            wav_recon_path = os.path.join(file_output_dir, f"q{q}{shift_suffix}_recon.wav")
             sf.write(wav_recon_path, wav_recon, audio_avif.TARGET_SR)
             
             # Use distinct keys
-            key = f"{img_format} Q{q}"
+            if all(s == 0 for s in shift_keys):
+                key = base_key
+            else:
+                key = f"Shifted({','.join(map(str, shift_keys))}) {base_key}"
+
             variants[key] = {
                 'image': os.path.relpath(img_path, output_dir),
                 'wav': os.path.relpath(wav_recon_path, output_dir),
@@ -339,11 +357,15 @@ def main():
         # Optional WebP Loop
         if use_webp:
             for q in audio_avif.QUALITIES:
-                webp_path = os.path.join(file_output_dir, f"webp_video_q{q}.webp")
+                if all(s == 0 for s in shift_keys):
+                    shift_suffix = ""
+                else:
+                    shift_suffix = "_s" + "_".join(map(str, shift_keys))
+
+                webp_path = os.path.join(file_output_dir, f"webp_video_q{q}{shift_suffix}.webp")
                 
-                # Encode (this handles chunking internally)
-                # Chunk width 128 (approx 2s)
-                audio_avif.logmel_to_webp_anim(logmel, rms, webp_path, quality=q, chunk_width=128, gaussian_blur=gaussian_blur, horizontal_usm=horizontal_usm)
+                # Encode (Sequential Shifts)
+                audio_avif.logmel_to_webp_anim(logmel, rms, webp_path, quality=q, chunk_width=128, gaussian_blur=gaussian_blur, horizontal_usm=horizontal_usm, shift_key=shift_keys)
                 compressed_img_size = os.path.getsize(webp_path)
                 
                 # Decode
@@ -352,10 +374,14 @@ def main():
                 if rms_recon:
                     wav_recon = audio_avif.apply_loudness(wav_recon, rms_recon)
                     
-                wav_recon_path = os.path.join(file_output_dir, f"webp_video_q{q}_recon.wav")
+                wav_recon_path = os.path.join(file_output_dir, f"webp_video_q{q}{shift_suffix}_recon.wav")
                 sf.write(wav_recon_path, wav_recon, audio_avif.TARGET_SR)
                 
-                key = f"WebP-Video Q{q}"
+                if all(s == 0 for s in shift_keys):
+                    key = f"WebP-Video Q{q}"
+                else:
+                    key = f"Shifted({','.join(map(str, shift_keys))}) WebP-Video Q{q}"
+
                 variants[key] = {
                     'image': os.path.relpath(webp_path, output_dir),
                     'wav': os.path.relpath(wav_recon_path, output_dir),

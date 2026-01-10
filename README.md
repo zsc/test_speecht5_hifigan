@@ -30,6 +30,7 @@
 - **重排 (Reshaping)**: 可选功能。为了提高图像编码效率，可通过 `--sq` 参数将细长的频谱图切片并堆叠成接近方形的图像（宽度按 16 对齐）。解码时根据元数据自动还原。
 - **水平拉伸 (Stretching)**: 可选功能。通过 `--stretch` 参数（如 `--stretch 2.0`）在宽度方向对频谱图进行重采样。由于解码时不会自动缩放回原长，这会直接改变重建音频的时长（如拉伸 2 倍会导致音频播放速度减慢一倍）。该选项可用于实验不同像素密度下的编码表现，或作为一种简单的变速手段。
 - **水平去模糊 (Unsharp Masking)**: 可选功能。通过 `--horizontal-usm <kernel-size,sigma,strength>` 参数（如 `--horizontal-usm 10,3,0.1`）在宽度方向（时间轴）应用一维反锐化掩模。这可以用于在编码前补偿因水平拉伸或有损压缩导致的细节模糊，增强时间轴方向的特征对比度。
+- **垂直移位 (Key Shifting)**: 可选功能。通过 `--shift-key <pixels>` 参数（如 `--shift-key 5` 或 `--shift-key -5,5`）在垂直方向（频率轴）移动频谱图。支持传入逗号分隔的多个值以在单张图上按顺序执行多次移位。正数表示向上移动（提高音调），负数表示向下移动（降低音调）。空白区域会自动填充估计的平滑底噪，以保持听感自然。这是一种基于图像处理的简单的变调手段。
 - **伪视频模式 (Pseudo-Video)**: 通过 `--webp-video` 参数启用。将长频谱图沿时间轴切分为多个小块（默认约 2 秒/块），并将这些块作为连续帧保存为 **WebP 动图**。这利用了 WebP 对帧间差异的压缩能力（尽管频谱图的“帧间”相关性与普通视频不同），在某些情况下能提供优于单张大图的压缩率。
 - **元数据嵌入**: 计算原始音频的 RMS (Root Mean Square) 振幅，并作为元数据（Exif Tag 270 ImageDescription）嵌入到图像中。这确保了解码后的音频能还原到原始响度。
 - **编码**: 默认使用 `pillow-avif-plugin` 将灰度图编码为 AVIF 格式，也支持使用 JPEG 和 WebP (动图) 格式。
@@ -97,6 +98,10 @@ pip install -e .
 
     # 启用水平去模糊 (Unsharp Mask)
     audio-avif input.wav --output results_dir --horizontal-usm 10,3,0.1
+
+    # 启用垂直移位 (变调, 正数升高, 负数降低, 支持多个顺序执行)
+    audio-avif input.wav --output results_dir --shift-key 5
+    audio-avif input.wav --output results_dir --shift-key=-5,5
 
     # 启用 WebP 动图模式 (Pseudo-Video)
     audio-avif input.wav --output results_dir --webp-video
